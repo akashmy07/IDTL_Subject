@@ -1,11 +1,22 @@
 create extension if not exists "pgcrypto";
 
 create table if not exists public.users (
-  id uuid primary key references auth.users(id) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  email text not null,
+  password_hash text,
+  google_id text,
   role text not null default 'public' check (role in ('public', 'admin')),
-  display_name text,
+  display_name text not null,
   created_at timestamptz not null default now()
 );
+
+alter table public.users drop constraint if exists users_id_fkey;
+alter table public.users alter column id set default gen_random_uuid();
+alter table public.users add column if not exists email text;
+alter table public.users add column if not exists password_hash text;
+alter table public.users add column if not exists google_id text;
+alter table public.users add column if not exists display_name text;
+create unique index if not exists users_email_unique on public.users (email);
 
 create table if not exists public.hazards (
   id uuid primary key default gen_random_uuid(),
@@ -20,11 +31,21 @@ create table if not exists public.hazards (
   location_text text not null,
   photo_url text,
   created_by uuid references public.users(id) on delete set null,
+  reporter_email text,
   assigned_department text,
+  department_route jsonb,
+  delivery jsonb,
+  delivery_status text,
   resolution_notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.hazards add column if not exists reporter_email text;
+alter table public.hazards add column if not exists department_route jsonb;
+alter table public.hazards add column if not exists delivery jsonb;
+alter table public.hazards add column if not exists delivery_status text;
+create index if not exists hazards_created_by_created_at_idx on public.hazards (created_by, created_at desc);
 
 create table if not exists public.audit_logs (
   id uuid primary key default gen_random_uuid(),
@@ -39,14 +60,20 @@ alter table public.users enable row level security;
 alter table public.hazards enable row level security;
 alter table public.audit_logs enable row level security;
 
-create policy "Users can read their own profile" on public.users for select using (id = auth.uid());
-create policy "Users can update their own profile" on public.users for update using (id = auth.uid());
-create policy "Public users can create their own reports" on public.hazards for insert with check (created_by = auth.uid() and role_from_auth() = 'public');
-create policy "Users can read their own reports" on public.hazards for select using (created_by = auth.uid() or role_from_auth() = 'admin');
-create policy "Admins can update reports" on public.hazards for update using (role_from_auth() = 'admin') with check (role_from_auth() = 'admin');
+drop policy if exists "Users can read their own profile" on public.users;
+drop policy if exists "Users can update their own profile" on public.users;
+drop policy if exists "Public users can create their own reports" on public.hazards;
+drop policy if exists "Users can read their own reports" on public.hazards;
+drop policy if exists "Admins can update reports" on public.hazards;
 
-create or replace function public.role_from_auth() returns text
-language sql stable security definer set search_path = public
-as $$
-select coalesce((select role from public.users where id = auth.uid()), 'public');
-$$;
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('report-evidence', 'report-evidence', true, 4194304, array['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+on conflict (id) do update
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "Public can view report evidence" on storage.objects;
+create policy "Public can view report evidence"
+  on storage.objects for select
+  using (bucket_id = 'report-evidence');

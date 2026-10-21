@@ -1,8 +1,11 @@
 import 'dotenv/config';
 import app from './app.js';
 
-const port = Number(process.env.PORT || 4000);
+if (!process.env.VERCEL) {
+  const port = Number(process.env.PORT || 4000);
+  app.listen(port, () => {
+    console.log(`Public Seva API listening on http://localhost:${port}`);
+  });
+}
 
-app.listen(port, () => {
-  console.log(`Public Seva API listening on http://localhost:${port}`);
-});
+export default app;

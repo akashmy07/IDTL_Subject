@@ -6,22 +6,25 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { OAuth2Client } from 'google-auth-library';
 import multer from 'multer';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-import dotenv from 'dotenv';
 import { deliverDepartmentReport, resolveDepartmentRoute } from './department-routing.js';
+import {
+  addActivity,
+  createHazard,
+  createUser,
+  deleteEvidence,
+  ensureAdmin,
+  findUserByEmail,
+  findUserById,
+  getUploadDirectory,
+  listHazards,
+  listHazardsForStats,
+  listPublicHazards,
+  uploadEvidence,
+  updateHazard,
+} from './storage.js';
 
 const app = express();
-const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(currentDirectory, '..');
-dotenv.config({ path: path.join(root, '.env') });
-const dataPath = path.join(root, 'server', 'data', 'store.json');
-const uploadDir = path.join(root, 'server', 'uploads');
-if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD)) {
-  throw new Error('JWT_SECRET, ADMIN_EMAIL, and ADMIN_PASSWORD must be configured in production');
-}
 const clientOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173,http://localhost:5174,http://localhost:5175')
   .split(',').map((origin) => origin.trim()).filter(Boolean);
 const jwtSecret = process.env.JWT_SECRET || 'development-only-change-before-production';
@@ -29,40 +32,13 @@ const googleClient = process.env.GOOGLE_CLIENT_ID ? new OAuth2Client(process.env
 const publicRole = 'public';
 const adminRole = 'admin';
 
-await fs.mkdir(path.dirname(dataPath), { recursive: true });
-await fs.mkdir(uploadDir, { recursive: true });
-
-let store = {
-  users: [],
-  hazards: [],
-  audit: [],
-};
-
-try {
-  const raw = await fs.readFile(dataPath, 'utf8');
-  store = JSON.parse(raw);
-} catch {
-  await persist();
+if ((process.env.NODE_ENV === 'production' || process.env.VERCEL) &&
+  (!process.env.JWT_SECRET || !process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD)) {
+  throw new Error('JWT_SECRET, ADMIN_EMAIL, and ADMIN_PASSWORD must be configured in production');
 }
-
 const adminEmail = (process.env.ADMIN_EMAIL || 'akashmy05@gmail.com').toLowerCase();
 const adminPassword = process.env.ADMIN_PASSWORD || 'PublicSevaAdmin123!';
-const existingAdmin = store.users.find((user) => user.email === adminEmail);
-if (!existingAdmin) {
-  store.users.push({
-    id: randomUUID(),
-    name: 'System Administrator',
-    email: adminEmail,
-    passwordHash: await bcrypt.hash(adminPassword, 12),
-    role: adminRole,
-    createdAt: new Date().toISOString(),
-  });
-  await persist();
-}
-
-function persist() {
-  return fs.writeFile(dataPath, JSON.stringify(store, null, 2));
-}
+await ensureAdmin(adminEmail, await bcrypt.hash(adminPassword, 12));
 
 function userFromToken(token) {
   try {
@@ -89,29 +65,11 @@ function requireRole(role) {
   };
 }
 
-function recordActivity(user, action, metadata = {}) {
-  store.audit.push({
-    id: randomUUID(),
-    actorId: user.id,
-    hazardId: null,
-    action,
-    metadata,
-    createdAt: new Date().toISOString(),
-  });
-}
-
-function sanitizeFilename(name) {
-  return name.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.\.+/g, '.').slice(0, 100);
-}
-
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: uploadDir,
-    filename: (_req, file, cb) => cb(null, `${Date.now()}-${randomUUID()}-${sanitizeFilename(file.originalname)}`),
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) return cb(new Error('Only image files are supported'));
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.mimetype)) return cb(new Error('Only JPEG, PNG, WEBP, or GIF images are supported'));
     cb(null, true);
   },
 });
@@ -120,29 +78,26 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({ origin: clientOrigins, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(uploadDir, { maxAge: '1h' }));
+app.use('/uploads', express.static(getUploadDirectory(), { maxAge: '1h' }));
 app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, limit: 500, standardHeaders: true, legacyHeaders: false }));
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'Public Seva API', timestamp: new Date().toISOString() }));
 
 app.post('/api/auth/signup', async (req, res) => {
   const { name, email, password } = req.body;
-  if (!name || !email || !password || password.length < 10) return res.status(400).json({ error: 'Name, valid email, and a password of at least 10 characters are required' });
-  if (store.users.some((user) => user.email.toLowerCase() === email.toLowerCase())) return res.status(409).json({ error: 'An account with this email already exists' });
-  const user = { id: randomUUID(), name, email: email.toLowerCase(), passwordHash: await bcrypt.hash(password, 12), role: publicRole, createdAt: new Date().toISOString() };
-  store.users.push(user);
-  recordActivity(user, 'USER_SIGNUP', { source: 'email-password' });
-  await persist();
+  if (typeof name !== 'string' || !name.trim() || typeof email !== 'string' || !email.trim() || typeof password !== 'string' || password.length < 10) return res.status(400).json({ error: 'Name, valid email, and a password of at least 10 characters are required' });
+  if (await findUserByEmail(email.trim().toLowerCase())) return res.status(409).json({ error: 'An account with this email already exists' });
+  const user = await createUser({ id: randomUUID(), name: name.trim(), email: email.trim().toLowerCase(), passwordHash: await bcrypt.hash(password, 12), role: publicRole, createdAt: new Date().toISOString() });
+  await addActivity(user, 'USER_SIGNUP', { source: 'email-password' });
   const token = jwt.sign({ id: user.id, role: user.role, email: user.email }, jwtSecret, { expiresIn: '12h' });
   res.status(201).json({ token, user: { id: user.id, name, email: user.email, role: user.role } });
 });
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = store.users.find((entry) => entry.email.toLowerCase() === email?.toLowerCase());
+  const user = typeof email === 'string' ? await findUserByEmail(email.trim().toLowerCase()) : null;
   if (!user || !(await bcrypt.compare(password || '', user.passwordHash))) return res.status(401).json({ error: 'Invalid email or password' });
-  recordActivity(user, 'USER_SIGNIN', { source: 'email-password', ip: req.ip });
-  await persist();
+  await addActivity(user, 'USER_SIGNIN', { source: 'email-password', ip: req.ip });
   const token = jwt.sign({ id: user.id, role: user.role, email: user.email }, jwtSecret, { expiresIn: '12h' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
@@ -153,29 +108,33 @@ app.post('/api/auth/google', async (req, res) => {
   if (!credential) return res.status(400).json({ error: 'Google credential is required' });
   const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: process.env.GOOGLE_CLIENT_ID });
   const payload = ticket.getPayload();
-  if (!payload?.email || !payload.sub) return res.status(401).json({ error: 'Google authentication failed' });
-  let user = store.users.find((entry) => entry.email.toLowerCase() === payload.email.toLowerCase());
+  if (!payload?.email || !payload.sub || !payload.email_verified) return res.status(401).json({ error: 'Google authentication failed' });
+  let user = await findUserByEmail(payload.email.toLowerCase());
   if (!user) {
-    user = { id: randomUUID(), name: payload.name || payload.email, email: payload.email.toLowerCase(), passwordHash: '', googleId: payload.sub, role: publicRole, createdAt: new Date().toISOString() };
-    store.users.push(user);
+    user = await createUser({ id: randomUUID(), name: payload.name || payload.email, email: payload.email.toLowerCase(), passwordHash: '', googleId: payload.sub, role: publicRole, createdAt: new Date().toISOString() });
   }
-  recordActivity(user, 'USER_SIGNIN', { source: 'google-oauth', ip: req.ip });
-  await persist();
+  await addActivity(user, 'USER_SIGNIN', { source: 'google-oauth', ip: req.ip });
   const token = jwt.sign({ id: user.id, role: user.role, email: user.email }, jwtSecret, { expiresIn: '12h' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => {
-  const user = store.users.find((entry) => entry.id === req.user.id);
+app.get('/api/auth/me', requireAuth, async (req, res) => {
+  const user = await findUserById(req.user.id);
   res.json({ user: user ? { id: user.id, name: user.name, email: user.email, role: user.role } : null });
 });
 
-app.get('/api/hazards', requireAuth, (req, res) => {
-  const rows = req.user.role === adminRole ? store.hazards : store.hazards.filter((hazard) => hazard.createdBy === req.user.id);
-  res.json({ hazards: rows.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) });
+app.get('/api/hazards', requireAuth, async (req, res) => {
+  res.json({ hazards: await listHazards(req.user) });
 });
 
-app.get('/api/hazards/public', (_req, res) => res.json({ hazards: store.hazards.filter((hazard) => hazard.status !== 'closed').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) }));
+app.get('/api/hazards/public', async (_req, res) => {
+  const hazards = await listPublicHazards();
+  res.json({ hazards: hazards.map((hazard) => {
+    const publicHazard = { ...hazard };
+    delete publicHazard.reporterEmail;
+    return publicHazard;
+  }) });
+});
 
 app.post('/api/hazards', requireAuth, requireRole(publicRole), upload.single('photo'), async (req, res) => {
   const { title, description, category, priority, latitude, longitude, locationText } = req.body;
@@ -184,10 +143,11 @@ app.post('/api/hazards', requireAuth, requireRole(publicRole), upload.single('ph
     return res.status(400).json({ error: 'Complete title, description, category, priority, location, and valid coordinates are required' });
   }
   const route = resolveDepartmentRoute(category, priority);
+  const photoUrl = await uploadEvidence(req.file);
   const hazard = {
-    id: randomUUID(), ticketNumber: `PS-${new Date().getFullYear()}-${String(store.hazards.length + 1001).padStart(4, '0')}`,
+    id: randomUUID(), ticketNumber: `PS-${new Date().getFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`,
     title, description, category, priority, status: 'received', latitude: coordinates[0], longitude: coordinates[1], locationText,
-    photoUrl: req.file ? `/uploads/${req.file.filename}` : null, createdBy: req.user.id, reporterEmail: req.user.email,
+    photoUrl, createdBy: req.user.id, reporterEmail: req.user.email,
     assignedDepartment: route.department,
     departmentRoute: { departmentId: route.departmentId, department: route.department, email: route.email, responseWindow: route.responseWindow },
     resolutionNotes: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -195,27 +155,43 @@ app.post('/api/hazards', requireAuth, requireRole(publicRole), upload.single('ph
   const delivery = await deliverDepartmentReport(route, hazard);
   hazard.delivery = delivery;
   hazard.deliveryStatus = delivery.status;
-  store.hazards.push(hazard);
-  store.audit.push({ id: randomUUID(), actorId: req.user.id, hazardId: hazard.id, action: 'REPORT_ROUTED', metadata: { department: route.department, deliveryStatus: delivery.status, deliveryMethod: delivery.method }, createdAt: new Date().toISOString() });
-  await persist();
-  res.status(201).json({ hazard, delivery });
+  let createdHazard;
+  try {
+    createdHazard = await createHazard(hazard);
+  } catch (error) {
+    if (photoUrl) {
+      try {
+        await deleteEvidence(photoUrl);
+      } catch (cleanupError) {
+        console.error('Failed to remove orphaned report evidence:', cleanupError);
+      }
+    }
+    throw error;
+  }
+  await addActivity(req.user, 'REPORT_ROUTED', {
+    department: route.department,
+    deliveryStatus: delivery.status,
+    deliveryMethod: delivery.method,
+  }, hazard.id);
+  res.status(201).json({ hazard: createdHazard, delivery });
 });
 
 app.patch('/api/hazards/:id/status', requireAuth, requireRole(adminRole), async (req, res) => {
-  const hazard = store.hazards.find((entry) => entry.id === req.params.id);
   const { status, assignedDepartment, resolutionNotes } = req.body;
-  if (!hazard || !['received', 'reviewing', 'assigned', 'in_progress', 'resolved', 'closed'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  hazard.status = status;
-  hazard.assignedDepartment = assignedDepartment || hazard.assignedDepartment;
-  hazard.resolutionNotes = resolutionNotes || hazard.resolutionNotes;
-  hazard.updatedAt = new Date().toISOString();
-  store.audit.push({ id: randomUUID(), actorId: req.user.id, hazardId: hazard.id, action: `STATUS_${status.toUpperCase()}`, metadata: { assignedDepartment, resolutionNotes }, createdAt: new Date().toISOString() });
-  await persist();
+  if (!['received', 'reviewing', 'assigned', 'in_progress', 'resolved', 'closed'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  const hazard = await updateHazard(req.params.id, {
+    status,
+    assignedDepartment: assignedDepartment || undefined,
+    resolutionNotes: resolutionNotes || undefined,
+    updatedAt: new Date().toISOString(),
+  });
+  if (!hazard) return res.status(404).json({ error: 'Report not found' });
+  await addActivity(req.user, `STATUS_${status.toUpperCase()}`, { assignedDepartment, resolutionNotes }, hazard.id);
   res.json({ hazard });
 });
 
-app.get('/api/dashboard/stats', requireAuth, (req, res) => {
-  const reports = req.user.role === adminRole ? store.hazards : store.hazards.filter((hazard) => hazard.createdBy === req.user.id);
+app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
+  const reports = await listHazardsForStats(req.user);
   const stats = {
     total: reports.length,
     received: reports.filter((hazard) => hazard.status === 'received').length,
@@ -230,6 +206,8 @@ app.post('/api/ai/classify', requireAuth, requireRole(publicRole), async (req, r
   const { title, description } = req.body;
   if (!title || !description) return res.status(400).json({ error: 'Title and description are required' });
   if (!process.env.AI_API_KEY) return res.status(503).json({ error: 'Gemini AI API key is not configured.' });
+  let classification;
+  let source = 'gemini-ai';
   try {
     const model = process.env.AI_MODEL || 'gemini-2.5-flash';
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.AI_API_KEY)}`;
@@ -245,11 +223,8 @@ app.post('/api/ai/classify', requireAuth, requireRole(publicRole), async (req, r
     const data = await response.json();
     const rawResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
     const parsed = rawResponse ? JSON.parse(rawResponse) : null;
-    const classification = parsed?.classification;
+    classification = parsed?.classification;
     if (!classification?.category || !classification?.priority) throw new Error('Gemini response did not include valid classification fields');
-    recordActivity(req.user, 'AI_CLASSIFICATION', { metadata: classification });
-    await persist();
-    res.json({ classification, source: 'gemini-ai' });
   } catch (error) {
     const reportText = `${title} ${description}`.toLowerCase();
     const categoryRules = [
@@ -264,11 +239,15 @@ app.post('/api/ai/classify', requireAuth, requireRole(publicRole), async (req, r
       : ['flood', 'leak', 'outage', 'blocked', 'overflow', 'broken', 'cracked', 'pothole'].some((keyword) => reportText.includes(keyword))
         ? 'high'
         : 'medium';
-    const classification = { category, priority };
-    recordActivity(req.user, 'AI_CLASSIFICATION', { metadata: classification, source: 'deterministic-local-ai' });
-    await persist();
-    res.json({ classification, source: 'deterministic-local-ai', warning: 'Gemini was unavailable; local classification was used.' });
+    classification = { category, priority };
+    source = 'deterministic-local-ai';
   }
+  await addActivity(req.user, 'AI_CLASSIFICATION', { metadata: classification, source });
+  res.json({
+    classification,
+    source,
+    ...(source === 'deterministic-local-ai' ? { warning: 'Gemini was unavailable; local classification was used.' } : {}),
+  });
 });
 
 app.post('/api/ai/insights', requireAuth, requireRole(publicRole), async (req, res) => {
@@ -300,8 +279,7 @@ app.post('/api/ai/insights', requireAuth, requireRole(publicRole), async (req, r
     signals,
     source: process.env.AI_API_KEY ? 'gemini-ai' : 'deterministic-local-ai',
   };
-  recordActivity(req.user, 'AI_INSIGHT', { metadata: { riskScore, riskLevel, category } });
-  await persist();
+  await addActivity(req.user, 'AI_INSIGHT', { metadata: { riskScore, riskLevel, category } });
   res.json({ insight });
 });
 

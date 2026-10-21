@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://REPLACE-WITH-YOUR-API-VERCEL-DOMAIN/api/:path*"
+    },
+    {
+      "source": "/uploads/:path*",
+      "destination": "https://REPLACE-WITH-YOUR-API-VERCEL-DOMAIN/uploads/:path*"
+    }
+  ]
+}

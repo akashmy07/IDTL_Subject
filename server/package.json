@@ -5,10 +5,11 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "build": "node --check index.js && node --check app.js && node --check department-routing.js",
+    "build": "node --check index.js && node --check app.js && node --check storage.js && node --check department-routing.js",
     "test": "node --test department-routing.test.js app.test.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.118.0",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
