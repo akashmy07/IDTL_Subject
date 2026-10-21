@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://REPLACE-WITH-YOUR-API-VERCEL-DOMAIN/api/:path*"
+      "destination": "https://idtl-subject.vercel.app/api/:path*"
     },
     {
       "source": "/uploads/:path*",
-      "destination": "https://REPLACE-WITH-YOUR-API-VERCEL-DOMAIN/uploads/:path*"
+      "destination": "https://idtl-subject.vercel.app/uploads/:path*"
     }
   ]
 }
