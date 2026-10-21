@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root {
+  --ink: #091725;
+  --panel: #102637;
+  --text: #f3f8f7;
+  --muted: #a8bbc3;
+  --teal: #55e6c1;
+  --blue: #8aa7ff;
+  --line: rgba(190, 218, 229, 0.18);
+  --coral: #ff9d87;
+  --gold: #ffd574;
+}
+
+body {
+  background:
+    linear-gradient(122deg, rgba(36, 178, 149, 0.13), transparent 34%),
+    linear-gradient(238deg, rgba(97, 119, 225, 0.16), transparent 42%),
+    linear-gradient(18deg, rgba(208, 103, 92, 0.1), transparent 36%),
+    #091725;
+  background-attachment: fixed;
+}
+
+h1,
+h2,
+h3,
+.logo {
+  font-family: 'Space Grotesk', sans-serif;
+  letter-spacing: 0;
+}
+
+.hero-copy h1,
+.page-title h1,
+.auth-heading h1 {
+  font-family: 'Space Grotesk', sans-serif;
+  letter-spacing: 0;
+}
+
+.site-header {
+  background: linear-gradient(100deg, rgba(7, 24, 34, 0.96), rgba(17, 27, 48, 0.92), rgba(36, 27, 39, 0.9));
+}
+
+.logo {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.logo > span:last-child {
+  background: linear-gradient(105deg, #f4faf7 0%, #68e8c4 35%, #93aaff 69%, #ffad91 100%);
+  color: transparent;
+  background-clip: text;
+  -webkit-background-clip: text;
+}
+
+.logo strong {
+  color: inherit;
+}
+
+.logo-mark {
+  border-color: rgba(119, 230, 209, 0.55);
+  color: #79f0d2;
+  background: linear-gradient(145deg, rgba(64, 211, 176, 0.2), rgba(116, 143, 245, 0.22), rgba(255, 157, 135, 0.16));
+  box-shadow: 0 0 22px rgba(69, 213, 182, 0.12);
+}
+
+.form-card,
+.auth-panel {
+  background: linear-gradient(135deg, rgba(14, 39, 53, 0.97), rgba(19, 37, 59, 0.97) 62%, rgba(43, 35, 48, 0.96));
+}
+
+.form-card {
+  border-color: rgba(151, 197, 216, 0.22);
+}
+
+@media (max-width: 640px) {
+  .logo {
+    font-size: 14px;
+  }
+}
